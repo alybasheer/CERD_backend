@@ -3,7 +3,6 @@ import { JwtService } from '@nestjs/jwt';
 import { Types } from 'mongoose';
 import { AdminService } from './admin/admin.service';
 import { AuthenticationService } from './authentication/authentication.service';
-import { SignupDocument } from './authentication/signup.schema';
 import { ChatGateway } from './chat/chat.gateway';
 import { ChatService } from './chat/chat.service';
 import { CommunitiesController } from './communities/communities.controller';
@@ -15,6 +14,8 @@ import { CreateHelpRequestDto } from './help-requests/dto/create-help-request.dt
 import { MapService } from './map/map.service';
 import { RatingsService } from './ratings/ratings.service';
 import { VolunteerService } from './volunteer/volunteer.service';
+import { FirebaseService } from './firebase/firebase.service';
+import { HelpRequestMediaService } from './help-requests/help-request-media.service';
 
 type MutableDoc = Record<string, any> & {
     _id: Types.ObjectId;
@@ -45,6 +46,7 @@ const valueMatches = (actual: any, expected: any): boolean => {
     ) {
         if ('$ne' in expected) return !sameId(actual, expected.$ne);
         if ('$in' in expected) return expected.$in.some((item: any) => sameId(actual, item));
+        if ('$lte' in expected) return actual <= expected.$lte;
         if ('$near' in expected) return actual !== undefined;
         if ('$regex' in expected) {
             return new RegExp(expected.$regex, expected.$options).test(String(actual ?? ''));
@@ -296,19 +298,26 @@ class HelpRequestModel extends InMemoryDocument {
         return new InMemoryQuery(doc, 'HelpRequest');
     }
 
-    static findOne(query: any) {
-        return new InMemoryQuery(
-            this.documents.find((doc) => matchesQuery(doc, query)) ?? null,
-            'HelpRequest',
-        );
+    static updateMany(query: any, update: any) {
+        let modifiedCount = 0;
+        for (const doc of this.documents.filter((item) => matchesQuery(item, query))) {
+            if (update?.$set) Object.assign(doc, update.$set);
+            modifiedCount++;
+        }
+        return new InMemoryQuery({ modifiedCount } as any, 'HelpRequest');
     }
 
-    static updateOne() {
-        return new InMemoryQuery({ matchedCount: 1, modifiedCount: 1, acknowledged: true }, 'HelpRequest');
-    }
-
-    static countDocuments() {
-        return Promise.resolve(this.documents.length);
+    static updateOne(query: any, update: any) {
+        const doc = this.documents.find((item) => matchesQuery(item, query));
+        if (!doc) return new InMemoryQuery({ matchedCount: 0 } as any, 'HelpRequest');
+        if (update?.$set) Object.assign(doc, update.$set);
+        if (update?.$addToSet) {
+            for (const [key, value] of Object.entries(update.$addToSet)) {
+                doc[key] ??= [];
+                if (!doc[key].some((item: any) => sameId(item, value))) doc[key].push(value);
+            }
+        }
+        return new InMemoryQuery({ matchedCount: 1 } as any, 'HelpRequest');
     }
 }
 
@@ -376,6 +385,27 @@ class CommunityModel extends InMemoryDocument {
         const doc = this.documents.find((item) => matchesQuery(item, query));
         return new InMemoryQuery(doc ? { _id: doc._id } : null, 'Community');
     }
+
+    static updateMany(query: any, update: any) {
+        let modifiedCount = 0;
+        for (const doc of this.documents.filter((item) => matchesQuery(item, query))) {
+            if (update?.$set) Object.assign(doc, update.$set);
+            modifiedCount++;
+        }
+        return new InMemoryQuery({ modifiedCount } as any, 'Community');
+    }
+
+    static findOneAndUpdate(query: any, update: any) {
+        const doc = this.documents.find((item) => matchesQuery(item, query));
+        if (!doc) return new InMemoryQuery(null, 'Community');
+        if (update?.$addToSet) {
+            for (const [key, value] of Object.entries(update.$addToSet)) {
+                doc[key] ??= [];
+                if (!doc[key].some((item: any) => sameId(item, value))) doc[key].push(value);
+            }
+        }
+        return new InMemoryQuery(doc, 'Community');
+    }
 }
 
 class CommunityMessageModel extends InMemoryDocument {
@@ -388,6 +418,13 @@ class CommunityMessageModel extends InMemoryDocument {
     static find(query: any) {
         return new InMemoryQuery(
             this.documents.filter((doc) => matchesQuery(doc, query)),
+            'CommunityMessage',
+        );
+    }
+
+    static findById(id: string) {
+        return new InMemoryQuery(
+            this.documents.find((doc) => sameId(doc._id, id)) ?? null,
             'CommunityMessage',
         );
     }
@@ -462,9 +499,9 @@ describe('volunteer/requester role flow', () => {
     let chatService: ChatService;
     let mapService: MapService;
     let jwtService: JwtService;
-    let chatGateway: Pick<ChatGateway, 'notifyUsers' | 'isUserOnline'>;
-    let requester: SignupDocument;
-    let volunteer: SignupDocument;
+    let chatGateway: Pick<ChatGateway, 'notifyUsers' | 'isUserOnline' | 'disconnectUser'>;
+    let requester: { _id: unknown; role: string };
+    let volunteer: { _id: unknown; role: string };
 
     const requesterPassword = 'requester-pass';
     const volunteerPassword = 'volunteer-pass';
@@ -492,6 +529,8 @@ describe('volunteer/requester role flow', () => {
             expertise: 'first-aid',
             reason: 'Can help nearby people',
             cnic: '3520200000000',
+            cnicFrontImage: '/test-media/front',
+            cnicBackImage: '/test-media/back',
         });
         await adminService.approveApplication(idString(application));
 
@@ -516,13 +555,25 @@ describe('volunteer/requester role flow', () => {
         CommunityMessageModel.reset();
 
         jwtService = new JwtService({ secret: 'test_secret', signOptions: { expiresIn: '1h' } });
-        authService = new AuthenticationService(SignupModel as any, jwtService);
-        volunteerService = new VolunteerService(VolunteerModel as any);
-        adminService = new AdminService(VolunteerModel as any, authService);
+        authService = new AuthenticationService(SignupModel as any, jwtService, {
+            verifyGoogleToken: jest.fn(),
+        } as unknown as FirebaseService);
+        volunteerService = new VolunteerService(VolunteerModel as any, authService);
         chatGateway = {
             notifyUsers: jest.fn((userIds: string[]) => userIds.length),
             isUserOnline: jest.fn((userId: string) => onlineIds.has(userId)),
+            disconnectUser: jest.fn(),
         };
+        adminService = new AdminService(
+            VolunteerModel as any,
+            SignupModel as any,
+            HelpRequestModel as any,
+            authService,
+            { revokeAccount: jest.fn() } as any,
+            chatGateway as ChatGateway,
+            {} as RatingsService,
+            { notifyUsers: jest.fn().mockResolvedValue(0) } as any,
+        );
 
         const ratingsService = new RatingsService(RatingModel as any);
         helpService = new HelpRequestsService(
@@ -531,17 +582,18 @@ describe('volunteer/requester role flow', () => {
             VolunteerModel as any,
             chatGateway as ChatGateway,
             ratingsService,
-            {
-                getRoute: jest.fn(),
-                getRouteSafe: jest.fn().mockResolvedValue(null),
-                getDistanceMatrix: jest.fn().mockResolvedValue([]),
-            } as any,
+            { deleteRequestConversation: jest.fn() } as any,
+            { notifyUsers: jest.fn().mockResolvedValue(0) } as any,
         );
-        helpController = new HelpRequestsController(helpService);
+        helpController = new HelpRequestsController(helpService, {
+            upload: jest.fn(),
+            openDownloadStream: jest.fn(),
+        } as unknown as HelpRequestMediaService, ratingsService);
 
         const communitiesService = new CommunitiesService(
             CommunityModel as any,
             CommunityMessageModel as any,
+            { notifyUsers: jest.fn().mockResolvedValue(0) } as any,
         );
         communitiesController = new CommunitiesController(communitiesService);
         chatService = new ChatService({} as any, SignupModel as any, HelpRequestModel as any);
@@ -723,15 +775,16 @@ describe('volunteer/requester role flow', () => {
             content: 'Coordination note',
         });
         const messages = await communitiesController.getMessages(reqFor(volunteer), communityId);
-        expect(message.data.content).toBe('Coordination note');
+        expect(message.data!.content).toBe('Coordination note');
         expect(messages.data).toHaveLength(1);
 
         const started = await communitiesController.start(reqFor(volunteer), communityId);
         expect(started.data.status).toBe('started');
 
         const removed = await communitiesController.remove(reqFor(volunteer), communityId);
-        expect(removed.data).toEqual({ deleted: true });
-        await expect(communitiesController.findOne(communityId)).rejects.toThrow(NotFoundException);
+        expect(removed.data).toEqual({ deleted: false, status: 'cancelled' });
+        const cancelled = await communitiesController.findOne(communityId);
+        expect(cancelled.data.status).toBe('cancelled');
     });
 
     it('builds chat coordination contacts for the requester side and volunteer side', async () => {

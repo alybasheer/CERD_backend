@@ -45,6 +45,15 @@ export class Community {
 
     @Prop({ required: true, default: 'open', enum: ['open', 'started', 'completed', 'cancelled'] })
     status: string;
+
+    @Prop()
+    startedAt?: Date;
+
+    @Prop()
+    endsAt?: Date;
+
+    @Prop({ type: [Types.ObjectId], ref: 'Signup', default: [] })
+    hiddenFor: Types.ObjectId[];
 }
 
 @Schema({ timestamps: true })
@@ -64,4 +73,5 @@ export const CommunityMessageSchema = SchemaFactory.createForClass(CommunityMess
 
 CommunitySchema.index({ location: '2dsphere' });
 CommunitySchema.index({ category: 1, status: 1 });
+CommunitySchema.index({ status: 1, endsAt: 1 });
 CommunityMessageSchema.index({ communityId: 1, createdAt: 1 });

@@ -1,5 +1,5 @@
 import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
+import { SessionService } from '../../authentication/session.service';
 import { Request } from 'express';
 
 /**
@@ -14,9 +14,9 @@ import { Request } from 'express';
  */
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
-    constructor(private readonly jwtService: JwtService) {}
+    constructor(private readonly sessions: SessionService) {}
 
-    canActivate(context: ExecutionContext): boolean {
+    async canActivate(context: ExecutionContext): Promise<boolean> {
         const request = context.switchToHttp().getRequest<Request>();
         const authHeader = request.headers.authorization;
 
@@ -27,9 +27,7 @@ export class JwtAuthGuard implements CanActivate {
         const token = authHeader.replace(/^Bearer\s+/i, '');
 
         try {
-            const payload = this.jwtService.verify(token, {
-                secret: process.env.JWT_SECRET ?? 'dev_secret_key',
-            });
+            const payload = await this.sessions.authenticate(token);
             // Attach decoded JWT payload to the request object
             (request as any).user = payload;
             return true;

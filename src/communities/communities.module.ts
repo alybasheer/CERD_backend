@@ -5,6 +5,7 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CommunitiesController } from './communities.controller';
 import { CommunitiesService } from './communities.service';
 import { CommunityMessageSchema, CommunitySchema } from './community.schema';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
     imports: [
@@ -13,6 +14,7 @@ import { CommunityMessageSchema, CommunitySchema } from './community.schema';
             { name: 'CommunityMessage', schema: CommunityMessageSchema },
         ]),
         AuthenticationModule,
+        NotificationsModule,
     ],
     controllers: [CommunitiesController],
     providers: [CommunitiesService, JwtAuthGuard],

@@ -2,6 +2,7 @@ import {
     BadRequestException,
     Body,
     Controller,
+    Delete,
     Get,
     Param,
     Patch,
@@ -306,6 +307,18 @@ export class HelpRequestsController {
             message: 'Help request released',
             data: request,
         };
+    }
+
+    @Patch(':id/cancel')
+    async cancel(@Req() req: any, @Param('id') id: string) {
+        const request = await this.helpRequestsService.cancelRequest(id, req.user.sub);
+        return { success: true, message: 'Help request cancelled', data: request };
+    }
+
+    @Delete(':id/history')
+    async hideFromHistory(@Req() req: any, @Param('id') id: string) {
+        await this.helpRequestsService.hideFromOwnerHistory(id, req.user.sub);
+        return { success: true, message: 'Request removed from your history' };
     }
 
     @Post(':id/rating')

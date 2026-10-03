@@ -7,9 +7,6 @@ import { Model } from 'mongoose';
 import { FirebaseService } from '../firebase/firebase.service';
 import { SignupDocument } from './signup.schema';
 
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? 'admin@example.com';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? 'adminpass123';
-
 @Injectable()
 export class AuthenticationService {
     constructor(
@@ -17,6 +14,15 @@ export class AuthenticationService {
         private readonly jwtService: JwtService,
         private readonly firebaseService: FirebaseService,
     ) { }
+
+    private configuredAdmin(email: string, password: string) {
+        const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+        const adminPassword = process.env.ADMIN_PASSWORD;
+        if (!adminEmail || !adminPassword || email !== adminEmail || password !== adminPassword) {
+            return null;
+        }
+        return { _id: 'admin-id', email: adminEmail, username: 'admin', role: 'admin' };
+    }
 
     private signUserToken(user: any) {
         // Ensure `sub` is always a string (ObjectId may be an object);
@@ -37,8 +43,8 @@ export class AuthenticationService {
         }
 
         // if creating admin via env credentials, just return token for admin
-        if (email === ADMIN_EMAIL.trim().toLowerCase() && data.password === ADMIN_PASSWORD) {
-            const admin = { _id: 'admin-id', email: ADMIN_EMAIL, username: 'admin', role: 'admin' };
+        const admin = this.configuredAdmin(email, data.password);
+        if (admin) {
             const token = this.signUserToken(admin);
             return { user: admin, access_token: token };
         }
@@ -63,10 +69,6 @@ export class AuthenticationService {
         }
     }
 
-    async findAll() {
-        return this.signupModel.find().exec();
-    }
-
     async findByEmail(email: string) {
         return this.signupModel.findOne({ email: email.trim().toLowerCase() }).exec();
     }
@@ -75,13 +77,13 @@ export class AuthenticationService {
         const normalizedEmail = email.trim().toLowerCase();
 
         // admin shortcut
-        if (normalizedEmail === ADMIN_EMAIL.trim().toLowerCase() && password === ADMIN_PASSWORD) {
-            const admin = { _id: 'admin-id', email: ADMIN_EMAIL, username: 'admin', role: 'admin' };
+        const admin = this.configuredAdmin(normalizedEmail, password);
+        if (admin) {
             const token = this.signUserToken(admin);
             return { user: admin, access_token: token };
         }
 
-        const user = await this.findByEmail(normalizedEmail);
+        const user = await this.signupModel.findOne({ email: normalizedEmail }).select('+password').exec();
         if (!user) return null;
         const match = await bcrypt.compare(password, user.password);
         if (!match) return null;
@@ -159,4 +161,3 @@ export class AuthenticationService {
         }
     }
 }
-

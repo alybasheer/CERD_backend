@@ -59,6 +59,24 @@ export class RatingsService {
             .exec();
     }
 
+    async getVolunteerRatingsPage(volunteerId: string, page = 1, limit = 20) {
+        const safeLimit = Math.min(Math.max(limit, 1), 50);
+        const safePage = Math.max(page, 1);
+        const filter = { volunteerId: new Types.ObjectId(volunteerId) };
+        const [items, total] = await Promise.all([
+            this.ratingModel
+                .find(filter)
+                .populate('requesterId', 'username email')
+                .populate('requestId', 'title description status completedAt createdAt')
+                .sort({ createdAt: -1 })
+                .skip((safePage - 1) * safeLimit)
+                .limit(safeLimit)
+                .exec(),
+            this.ratingModel.countDocuments(filter).exec(),
+        ]);
+        return { items, page: safePage, limit: safeLimit, total };
+    }
+
     async getVolunteerStatsMap(volunteerIds: string[]) {
         const objectIds = volunteerIds.filter((id) => Types.ObjectId.isValid(id)).map((id) => new Types.ObjectId(id));
 

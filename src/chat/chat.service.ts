@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { SignupDocument } from '../authentication/signup.schema';
@@ -13,18 +13,21 @@ export class ChatService {
         @InjectModel('HelpRequest') private helpRequestModel: Model<HelpRequestDocument>,
     ) { }
 
-    async saveMessage(senderId: string, receiverId: string, content: string) {
+    async saveMessage(senderId: string, receiverId: string, content: string, requestId?: string) {
+        if (requestId) await this.assertActiveRequestChat(requestId, senderId, receiverId);
         const message = new this.messageModel({
             senderId: new Types.ObjectId(senderId),
             receiverId: new Types.ObjectId(receiverId),
             content,
+            requestId: requestId ? new Types.ObjectId(requestId) : undefined,
             isRead: false,
             timestamp: new Date(),
         });
         return message.save();
     }
 
-    async getConversation(userId: string, otherUserId: string, limit = 50) {
+    async getConversation(userId: string, otherUserId: string, limit = 50, requestId?: string) {
+        if (requestId) await this.assertActiveRequestChat(requestId, userId, otherUserId);
         // Convert string IDs to ObjectId for proper comparison
         const userObjectId = new Types.ObjectId(userId);
         const otherUserObjectId = new Types.ObjectId(otherUserId);
@@ -35,6 +38,8 @@ export class ChatService {
                     { senderId: userObjectId, receiverId: otherUserObjectId },
                     { senderId: otherUserObjectId, receiverId: userObjectId },
                 ],
+                hiddenFor: { $ne: userObjectId },
+                requestId: requestId ? new Types.ObjectId(requestId) : { $exists: false },
             })
             .sort({ createdAt: -1 })
             .limit(limit)
@@ -70,6 +75,8 @@ export class ChatService {
             {
                 $match: {
                     $or: [{ senderId: new Types.ObjectId(userId) }, { receiverId: new Types.ObjectId(userId) }],
+                    hiddenFor: { $ne: new Types.ObjectId(userId) },
+                    requestId: { $exists: false },
                 },
             },
             {
@@ -124,33 +131,49 @@ export class ChatService {
     }
 
     async deleteMessage(messageId: string, userId: string) {
-        // Find message and verify user is the sender (only sender can delete)
         const message = await this.messageModel.findById(messageId);
 
         if (!message) {
             return null;
         }
 
-        // Verify the user is the sender
-        if (message.senderId.toString() !== userId) {
+        if (message.senderId.toString() !== userId && message.receiverId.toString() !== userId) {
             return null;
         }
-
-        // Delete the message
-        return this.messageModel.findByIdAndDelete(messageId);
+        return this.messageModel.findByIdAndUpdate(
+            messageId,
+            { $addToSet: { hiddenFor: new Types.ObjectId(userId) } },
+            { new: true },
+        );
     }
 
     async deleteConversation(userId: string, otherUserId: string) {
-        // Delete all messages between two users
         const userObjectId = new Types.ObjectId(userId);
         const otherUserObjectId = new Types.ObjectId(otherUserId);
 
-        return this.messageModel.deleteMany({
+        return this.messageModel.updateMany({
             $or: [
                 { senderId: userObjectId, receiverId: otherUserObjectId },
                 { senderId: otherUserObjectId, receiverId: userObjectId },
             ],
-        });
+            requestId: { $exists: false },
+        }, { $addToSet: { hiddenFor: userObjectId } });
+    }
+
+    async deleteRequestConversation(requestId: string) {
+        return this.messageModel.deleteMany({ requestId: new Types.ObjectId(requestId) }).exec();
+    }
+
+    private async assertActiveRequestChat(requestId: string, senderId: string, receiverId: string) {
+        if (!Types.ObjectId.isValid(requestId)) throw new BadRequestException('Invalid request chat');
+        const request: any = await this.helpRequestModel.findById(requestId).exec();
+        if (!request || request.status !== 'accepted' || !request.acceptedBy) {
+            throw new BadRequestException('This request chat is no longer active');
+        }
+        const participants = new Set([request.userId.toString(), request.acceptedBy.toString()]);
+        if (!participants.has(senderId) || !participants.has(receiverId) || senderId === receiverId) {
+            throw new BadRequestException('Only request participants can use this chat');
+        }
     }
 
     async getCoordinationContacts(userId: string, role = 'user') {

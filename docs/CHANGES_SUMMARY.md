@@ -1,5 +1,18 @@
 # Changes Summary
 
+> Historical note: the sections below describe the first stats and Google-login slice. For the current cross-repository design and verification record, use `CommunityServiceNetwork_Flutter/docs/ENGINEERING_NOTES.md` and its U01-U20 worklist.
+
+## Current backend scope (3 October 2026)
+
+- Revocable refresh-token sessions with live account/role enforcement for REST and sockets.
+- Durable request states, owner cancellation/history hiding, guarded transitions, and request-chat cleanup.
+- Per-user direct-chat hiding and request-scoped chat authorization.
+- Persisted community start/end lifecycle, joined history, and personal terminal-history hiding.
+- Account-owned Android/iOS FCM registrations with targeted request, chat, community, application, and moderation notifications.
+- Admin feedback pagination, account blocking, volunteer-role removal, session revocation, socket disconnection, and safe assignment reopening.
+
+Verification: TypeScript passes and Jest passes 10 suites / 26 tests. Live MongoDB migration/race checks and deployed Firebase delivery remain external acceptance work.
+
 ## 1. New API Endpoint: `GET /help-requests/my/stats`
 
 **Purpose:** Volunteer apna stats dekh sakta hai — kitne help requests resolve kiye, uski rating average, rating count, aur sab ratings ki list.

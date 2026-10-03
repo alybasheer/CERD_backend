@@ -1,14 +1,13 @@
-import { Body, BadRequestException, Controller, Get, Post, UnauthorizedException, UseGuards, Request } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Post, Req, UnauthorizedException, UseGuards } from '@nestjs/common';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { AuthenticationService } from './authentication.service';
 import { GoogleLoginDto } from './dto/google-login.dto';
 import { LocationDto } from './dto/location.dto';
-import { SignupDto } from './dto/signup.dto';
-import { LoginDto } from './dto/login.dto';
-import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { SessionService } from './session.service';
 
 @Controller('authentication')
 export class AuthenticationController {
-    constructor(private readonly authService: AuthenticationService) { }
+    constructor(private readonly authService: AuthenticationService, private readonly sessions: SessionService) { }
 
     @Post('signup')
     async signup(@Body() body: SignupDto) {
@@ -16,8 +15,7 @@ export class AuthenticationController {
         // result is { user, access_token }
         return {
             success: true,
-            access_token: result.access_token,
-            user: result.user,
+            ...await this.sessions.create(String(result.user._id)),
         };
     }
 
@@ -28,14 +26,8 @@ export class AuthenticationController {
         // auth is { user, access_token }
         return {
             success: true,
-            access_token: auth.access_token,
-            user: auth.user,
+            ...await this.sessions.create(String(auth.user._id)),
         };
-    }
-
-    @Get('signup')
-    async getSignupPage() {
-        return this.authService.findAll();
     }
 
     /**
@@ -52,10 +44,9 @@ export class AuthenticationController {
      */
     @UseGuards(JwtAuthGuard)
     @Post('location')
-    async updateLocation(@Request() req, @Body() body: LocationDto) {
-        const userId = req.user.sub;
-        // body.latitude and body.longitude are guaranteed numbers now
-        return this.authService.updateLocationById(userId, body.latitude, body.longitude);
+    @UseGuards(JwtAuthGuard)
+    async updateLocation(@Req() req: { user: { sub: string } }, @Body() body: LocationDto) {
+        return this.authService.updateLocationById(req.user.sub, body.latitude, body.longitude);
     }
 
     @Post('google-login')
@@ -69,12 +60,20 @@ export class AuthenticationController {
 
             return {
                 success: true,
-                access_token: result.access_token,
-                user: result.user,
+                ...await this.sessions.create(String(result.user._id)),
             };
         } catch (error) {
             throw new UnauthorizedException('Google login failed: ' + error.message);
         }
     }
 
+    @Post('refresh')
+    refresh(@Body() body: { refresh_token?: string }) {
+        return this.sessions.refresh(body.refresh_token);
+    }
+
+    @Post('logout')
+    logout(@Body() body: { refresh_token?: string }) {
+        return this.sessions.revoke(body.refresh_token);
+    }
 }

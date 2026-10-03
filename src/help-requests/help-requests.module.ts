@@ -6,6 +6,7 @@ import { ChatModule } from '../chat/chat.module';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RoutingService } from '../common/services/routing.service';
 import { RatingsModule } from '../ratings/ratings.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { VolunteerSchema } from '../volunteer/volunteer.schema';
 import { HelpRequestSchema } from './help-request.schema';
 import { HelpRequestMediaService } from './help-request-media.service';
@@ -22,6 +23,7 @@ import { HelpRequestsService } from './help-requests.service';
         AuthenticationModule,
         ChatModule,
         RatingsModule,
+        NotificationsModule,
     ],
     providers: [HelpRequestsService, HelpRequestMediaService, JwtAuthGuard, RoutingService],
     controllers: [HelpRequestsController],

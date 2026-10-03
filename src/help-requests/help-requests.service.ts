@@ -3,13 +3,14 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { SignupDocument } from '../authentication/signup.schema';
 import { ChatGateway } from '../chat/chat.gateway';
-import { RoutingService } from '../common/services/routing.service';
+import { ChatService } from '../chat/chat.service';
 import { RateHelpRequestDto } from '../ratings/dto/rate-help-request.dto';
 import { RatingsService } from '../ratings/ratings.service';
 import { VolunteerDocument } from '../volunteer/volunteer.schema';
 import { CreateHelpRequestDto } from './dto/create-help-request.dto';
 import { CreateSosRequestDto } from './dto/create-sos-request.dto';
 import { HelpRequestDocument } from './help-request.schema';
+import { NotificationsService } from '../notifications/notifications.service';
 
 /** Default radius in kilometres for nearby-volunteer queries. */
 const NEARBY_RADIUS_KM = parseInt(process.env.NEARBY_RADIUS_KM ?? '10', 10);
@@ -43,43 +44,9 @@ export class HelpRequestsService implements OnModuleInit {
         @InjectModel('Volunteer') private volunteerModel: Model<VolunteerDocument>,
         private readonly chatGateway: ChatGateway,
         private readonly ratingsService: RatingsService,
-        private readonly routingService: RoutingService,
+        private readonly chatService: ChatService,
+        private readonly notifications: NotificationsService,
     ) {}
-
-    async onModuleInit() {
-        await this.cleanupRedundantGeoIndex();
-    }
-
-    /**
-     * Migration: drop a redundant standalone { location: '2dsphere' } index on the
-     * helprequests collection if it still exists. Multiple 2dsphere indexes on one
-     * collection make MongoDB reject $geoNear with "more than one 2dsphere index ...
-     * unsure which to use". The schema now declares only the compound
-     * { status: 1, location: '2dsphere' } index, which covers the geo query.
-     */
-    private async cleanupRedundantGeoIndex() {
-        try {
-            const indexes = await this.helpRequestModel.collection.indexes();
-            const redundant = indexes.find(
-                (idx: any) =>
-                    idx.key &&
-                    Object.keys(idx.key).length === 1 &&
-                    idx.key.location === '2dsphere',
-            );
-            if (redundant?.name) {
-                await this.helpRequestModel.collection.dropIndex(redundant.name);
-                this.logger.log(
-                    `Dropped redundant 2dsphere index "${redundant.name}" from helprequests`,
-                );
-            } else {
-                this.logger.log('helprequests geo index is clean (single 2dsphere index)');
-            }
-        } catch (error) {
-            this.logger.error(
-                `Failed to clean up redundant geo index on helprequests: ${(error as Error).message}`,
-            );
-        }
-    }
 
     // ──────────────────────────────────────────────
     // CREATE
@@ -99,10 +66,7 @@ export class HelpRequestsService implements OnModuleInit {
             coordinates: [dto.longitude, dto.latitude], // GeoJSON: [lng, lat]
         };
 
-        const isSos = (dto as any).isSos === true;
-        const expiresAt = isSos
-            ? new Date(Date.now() + SOS_TTL_DAYS * 24 * 60 * 60 * 1000)
-            : new Date(Date.now() + TTL_HOURS * 60 * 60 * 1000);
+        const acceptanceExpiresAt = new Date(Date.now() + TTL_HOURS * 60 * 60 * 1000);
 
         const created = new this.helpRequestModel({
             userId: new Types.ObjectId(userId),
@@ -116,9 +80,7 @@ export class HelpRequestsService implements OnModuleInit {
             isSos,
             location,
             status: 'open',
-            notifiedCount: 0,
-            escalationLevel: 0,
-            expiresAt,
+            acceptanceExpiresAt,
         });
 
         const saved = await created.save();
@@ -153,11 +115,12 @@ export class HelpRequestsService implements OnModuleInit {
             },
         );
 
-        // Persist how many volunteers were notified (used by the SOS status card)
-        await this.helpRequestModel
-            .updateOne({ _id: saved._id }, { $set: { notifiedCount: notified } })
-            .exec();
-        saved.notifiedCount = notified;
+        void this.notifications.notifyUsers(
+            nearbyVolunteers.map((volunteer: any) => volunteer._id.toString()),
+            saved.isSos ? 'Nearby SOS request' : 'New nearby help request',
+            saved.title || saved.category,
+            { type: 'help_request', requestId: String(saved._id) },
+        ).catch(() => undefined);
 
         return { request: saved, nearbyVolunteers, nearbyOnlineVolunteers, notified };
     }
@@ -383,6 +346,7 @@ export class HelpRequestsService implements OnModuleInit {
 
     /** All open requests, newest first. */
     async getAllOpenRequests() {
+        await this.expireOpenRequests();
         return this.helpRequestModel
             .find({ status: 'open' })
             .sort({ createdAt: -1 })
@@ -399,63 +363,22 @@ export class HelpRequestsService implements OnModuleInit {
         latitude: number,
         radiusKm: number = NEARBY_RADIUS_KM,
     ) {
-        await this.checkSosEscalations();
-
-        const pipeline = [
-            {
-                $geoNear: {
-                    near: { type: 'Point', coordinates: [longitude, latitude] },
-                    distanceField: 'distanceMeters',
-                    maxDistance: radiusKm * 1000,
-                    spherical: true,
-                    query: { status: 'open' },
+        await this.expireOpenRequests();
+        return this.helpRequestModel
+            .find({
+                status: 'open',
+                location: {
+                    $near: {
+                        $geometry: {
+                            type: 'Point',
+                            coordinates: [longitude, latitude],
+                        },
+                        $maxDistance: radiusKm * 1000,
+                    },
                 },
-            },
-            {
-                $lookup: {
-                    from: 'signups',
-                    localField: 'userId',
-                    foreignField: '_id',
-                    as: 'userId',
-                },
-            },
-            { $unwind: { path: '$userId', preserveNullAndEmptyArrays: true } },
-            {
-                $addFields: {
-                    distanceKm: { $round: [{ $divide: ['$distanceMeters', 1000] }, 1] },
-                },
-            },
-            {
-                $project: {
-                    _id: 1, title: 1, category: 1, subCategory: 1, description: 1,
-                    image: 1, mediaUrls: 1, locationName: 1, location: 1,
-                    isSos: 1, status: 1, expiresAt: 1, createdAt: 1, updatedAt: 1, distanceKm: 1,
-                    userId: { _id: 1, username: 1, email: 1 },
-                },
-            },
-        ];
-
-        const requests = await this.helpRequestModel.aggregate(pipeline as any).exec();
-        const origin = { latitude, longitude };
-        const withLocation = requests.filter((r: any) => r.location?.coordinates);
-        if (withLocation.length === 0) return requests;
-
-        const destinations = withLocation.map((r: any) => ({
-            latitude: r.location.coordinates[1],
-            longitude: r.location.coordinates[0],
-        }));
-
-        const roadResults = await this.routingService.getDistanceMatrix(origin, destinations);
-
-        let idx = 0;
-        return requests.map((req: any) => {
-            if (!req.location?.coordinates) return req;
-            const road = roadResults[idx++];
-            if (road && 'distanceKm' in road && road.distanceKm > 0) {
-                return { ...req, roadDistanceKm: road.distanceKm, roadDurationMinutes: road.durationMinutes };
-            }
-            return { ...req, roadDistanceKm: null, roadDurationMinutes: null };
-        });
+            })
+            .populate('userId', 'username email')
+            .exec();
     }
 
     /** Get a single help request by ID. */
@@ -471,8 +394,9 @@ export class HelpRequestsService implements OnModuleInit {
 
     /** Requests posted by a specific user. */
     async getMyRequests(userId: string) {
+        await this.expireOpenRequests();
         return this.helpRequestModel
-            .find({ userId: new Types.ObjectId(userId) })
+            .find({ userId: new Types.ObjectId(userId), hiddenFor: { $ne: new Types.ObjectId(userId) } })
             .sort({ createdAt: -1 })
             .populate('acceptedBy', 'username email')
             .exec();
@@ -480,8 +404,7 @@ export class HelpRequestsService implements OnModuleInit {
 
     // ──────────────────────────────────────────────
     async getMyActiveRequests(userId: string) {
-        await this.checkSosEscalations();
-
+        await this.expireOpenRequests();
         return this.helpRequestModel
             .find({
                 userId: new Types.ObjectId(userId),
@@ -653,7 +576,7 @@ export class HelpRequestsService implements OnModuleInit {
         const saved = await this.helpRequestModel
             .findOneAndUpdate(
                 { _id: new Types.ObjectId(requestId), status: { $ne: 'resolved' } },
-                { $set: { status: 'resolved' } },
+                { $set: { status: 'resolved', completedAt: new Date() } },
                 { new: true },
             )
             .populate('userId', 'username email')
@@ -677,7 +600,91 @@ export class HelpRequestsService implements OnModuleInit {
             });
         }
 
+        const resolvedRecipient = isAcceptor
+            ? request.userId._id.toString()
+            : request.acceptedBy?._id.toString();
+        if (resolvedRecipient) void this.notifications.notifyUsers(
+            [resolvedRecipient],
+            'Help request completed',
+            'The connected request was marked complete.',
+            { type: 'help_request_resolved', requestId },
+        ).catch(() => undefined);
+
+        await this.chatService.deleteRequestConversation(requestId);
+
+        void this.notifications.notifyUsers(
+            [request.userId._id.toString()],
+            'Help request accepted',
+            'A verified volunteer accepted your request.',
+            { type: 'help_request_accepted', requestId: String(saved._id) },
+        ).catch(() => undefined);
+
         return saved;
+    }
+
+    async cancelRequest(requestId: string, ownerId: string) {
+        if (!Types.ObjectId.isValid(requestId)) throw new NotFoundException('Help request not found');
+        const request = await this.helpRequestModel
+            .findOneAndUpdate(
+                {
+                    _id: new Types.ObjectId(requestId),
+                    userId: new Types.ObjectId(ownerId),
+                    status: { $in: ['open', 'accepted'] },
+                },
+                { $set: { status: 'cancelled', completedAt: new Date() } },
+                { new: true },
+            )
+            .populate('userId', 'username email')
+            .populate('acceptedBy', 'username email role')
+            .exec();
+        if (!request) throw new BadRequestException('Only the owner can cancel an active request');
+        const volunteerId = (request.acceptedBy as any)?._id?.toString();
+        if (volunteerId) {
+            this.chatGateway.notifyUsers([volunteerId], 'help_request_cancelled', {
+                requestId: request._id,
+                cancelledBy: ownerId,
+            });
+        }
+        if (volunteerId) void this.notifications.notifyUsers(
+            [volunteerId],
+            'Help request cancelled',
+            'The requester cancelled the connected request.',
+            { type: 'help_request_cancelled', requestId },
+        ).catch(() => undefined);
+        await this.chatService.deleteRequestConversation(requestId);
+        return request;
+    }
+
+    async hideFromOwnerHistory(requestId: string, ownerId: string) {
+        if (!Types.ObjectId.isValid(requestId)) throw new NotFoundException('Help request not found');
+        const result = await this.helpRequestModel.updateOne(
+            {
+                _id: new Types.ObjectId(requestId),
+                userId: new Types.ObjectId(ownerId),
+                status: { $in: ['resolved', 'cancelled', 'expired'] },
+            },
+            { $addToSet: { hiddenFor: new Types.ObjectId(ownerId) } },
+        ).exec();
+        if (!result.matchedCount) {
+            throw new BadRequestException('Only completed, cancelled, or expired requests can be removed from history');
+        }
+    }
+
+    private async expireOpenRequests() {
+        const expired = await this.helpRequestModel
+            .find({ status: 'open', acceptanceExpiresAt: { $lte: new Date() } })
+            .select('_id')
+            .exec();
+        if (!expired.length) return;
+        await this.helpRequestModel.updateMany(
+            { status: 'open', acceptanceExpiresAt: { $lte: new Date() } },
+            { $set: { status: 'expired', completedAt: new Date() } },
+        ).exec();
+        await Promise.all(
+            expired.map((request: any) =>
+                this.chatService.deleteRequestConversation(request._id.toString()),
+            ),
+        );
     }
 
     async rateRequest(requestId: string, requesterId: string, dto: RateHelpRequestDto) {

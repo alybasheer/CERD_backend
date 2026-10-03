@@ -28,32 +28,22 @@ export class FirebaseService implements OnModuleInit {
       }
     }
 
-    const serviceAccountPath = path.resolve(process.cwd(), 'serviceAccountKey.json');
-    if (fs.existsSync(serviceAccountPath)) {
-      const serviceAccount = require(serviceAccountPath);
-      this.firebaseApp = admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
-      });
-      console.log('Firebase Admin SDK initialized from serviceAccountKey.json');
-      return;
+    async sendToTokens(tokens: string[], notification: { title: string; body: string }, data: Record<string, string>) {
+        if (!this.firebaseApp || tokens.length === 0) return { successCount: 0, invalidTokens: [] as string[] };
+        const result = await admin.messaging().sendEachForMulticast({
+            tokens,
+            notification,
+            data,
+            android: { priority: 'high' },
+            apns: { payload: { aps: { sound: 'default' } } },
+        });
+        const invalidTokens = result.responses
+            .map((response, index) => ({ response, token: tokens[index] }))
+            .filter(({ response }) => {
+                const code = response.error?.code;
+                return code === 'messaging/registration-token-not-registered' || code === 'messaging/invalid-registration-token';
+            })
+            .map(({ token }) => token);
+        return { successCount: result.successCount, invalidTokens };
     }
-
-    this.firebaseApp = admin.initializeApp({
-      credential: admin.credential.applicationDefault(),
-    });
-  }
-
-  async verifyGoogleToken(idToken: string): Promise<admin.auth.DecodedIdToken> {
-    if (!this.firebaseApp) {
-      throw new UnauthorizedException(
-        'Google sign-in is temporarily unavailable',
-      );
-    }
-    try {
-      const decoded = await this.firebaseApp.auth().verifyIdToken(idToken);
-      return decoded;
-    } catch {
-      throw new UnauthorizedException('Invalid Google sign-in token');
-    }
-  }
 }

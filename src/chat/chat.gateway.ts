@@ -1,5 +1,4 @@
-import { JwtService } from '@nestjs/jwt';
-import { InjectModel } from '@nestjs/mongoose';
+import { SessionService } from '../authentication/session.service';
 import {
     ConnectedSocket,
     MessageBody,
@@ -14,6 +13,7 @@ import { Model } from 'mongoose';
 import { Server, Socket } from 'socket.io';
 import { HelpRequestDocument } from '../help-requests/help-request.schema';
 import { ChatService } from './chat.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 interface AuthSocket extends Socket {
     userId?: string;
@@ -31,15 +31,12 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     @WebSocketServer()
     server: Server;
 
-    // Multi-socket registry: userId -> Set of connected socket ids.
-    // All sockets of a user are tracked; a new connection no longer
-    // silently overwrites the previous one.
     private connectedUsers = new Map<string, Set<string>>();
 
     constructor(
         private chatService: ChatService,
-        private jwtService: JwtService,
-        @InjectModel('HelpRequest') private helpRequestModel: Model<HelpRequestDocument>,
+        private sessions: SessionService,
+        private notifications: NotificationsService,
     ) { }
 
     afterInit(server: any) {
@@ -58,19 +55,12 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
             }
 
             // Verify token and get userId
-            const payload: any = this.jwtService.verify(token, {
-                secret: process.env.JWT_SECRET ?? 'dev_secret_key',
-            });
+            const payload = await this.sessions.authenticate(token);
 
             socket.userId = payload.sub;
-
-            // Register this socket alongside any existing sockets for the user
-            let sockets = this.connectedUsers.get(payload.sub);
-            if (!sockets) {
-                sockets = new Set<string>();
-                this.connectedUsers.set(payload.sub, sockets);
-            }
-            sockets.add(socket.id);
+            const socketIds = this.connectedUsers.get(payload.sub) ?? new Set<string>();
+            socketIds.add(socket.id);
+            this.connectedUsers.set(payload.sub, socketIds);
 
             console.log(`✅ User ${payload.sub} (role=${payload.role}) connected with socket ${socket.id} [total connected: ${this.connectedUsers.size}]`);
             socket.emit('connection_success', { message: 'Connected to chat server', userId: payload.sub });
@@ -82,15 +72,10 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     handleDisconnect(socket: AuthSocket) {
         if (socket.userId) {
-            const sockets = this.connectedUsers.get(socket.userId);
-            if (sockets) {
-                // Remove ONLY this socket; keep other live sockets of the same user
-                sockets.delete(socket.id);
-                if (sockets.size === 0) {
-                    this.connectedUsers.delete(socket.userId);
-                }
-            }
-            console.log(`✅ User ${socket.userId} disconnected (socket ${socket.id}) [total connected: ${this.connectedUsers.size}]`);
+            const socketIds = this.connectedUsers.get(socket.userId);
+            socketIds?.delete(socket.id);
+            if (socketIds?.size === 0) this.connectedUsers.delete(socket.userId);
+            console.log(`✅ User ${socket.userId} disconnected`);
         }
     }
 
@@ -118,10 +103,10 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     @SubscribeMessage('send_message')
     async handleSendMessage(
         @ConnectedSocket() socket: AuthSocket,
-        @MessageBody() data: { receiverId: string; content: string },
+        @MessageBody() data: { receiverId: string; content: string; requestId?: string },
     ) {
         try {
-            const { receiverId, content } = data;
+            const { receiverId, content, requestId } = data;
             const senderId = socket.userId;
 
             if (!content || !receiverId || !senderId) {
@@ -130,27 +115,38 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
             }
 
             // Save message to database
-            const message = await this.chatService.saveMessage(senderId, receiverId, content);
+            const message = await this.chatService.saveMessage(senderId, receiverId, content, requestId);
 
-            // Get receiver's active socket IDs
+            // Get receiver's socket ID
             const receiverSocketIds = this.connectedUsers.get(receiverId);
-            const online = !!receiverSocketIds && receiverSocketIds.size > 0;
 
-            // Emit to the receiver's sockets (all of them) if online
-            if (online) {
-                for (const socketId of receiverSocketIds) {
-                    socket.to(socketId).emit('receive_message', {
-                        _id: message._id,
-                        senderId: message.senderId,
-                        receiverId: message.receiverId,
-                        content: message.content,
-                        timestamp: message.timestamp,
-                        isRead: false,
-                    });
-                }
+            // Emit to receiver if online
+            if (receiverSocketIds?.size) {
+                for (const socketId of receiverSocketIds) socket.to(socketId).emit('receive_message', {
+                    _id: message._id,
+                    senderId: message.senderId,
+                    receiverId: message.receiverId,
+                    content: message.content,
+                    requestId: message.requestId,
+                    timestamp: message.timestamp,
+                    isRead: false,
+                });
                 console.log(`📨 Message sent from ${senderId} to ${receiverId} (online)`);
             } else {
                 console.log(`📨 Message saved for offline user ${receiverId}`);
+            }
+
+            if (!receiverSocketIds?.size) {
+                void this.notifications.notifyUsers(
+                    [receiverId],
+                    'New message',
+                    'You have a new message in WeHelp.',
+                    {
+                        type: requestId ? 'request_message' : 'direct_message',
+                        senderId,
+                        ...(requestId ? { requestId } : {}),
+                    },
+                ).catch(() => undefined);
             }
 
             // Confirm delivery to sender
@@ -159,9 +155,10 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
                 senderId: message.senderId,
                 receiverId: message.receiverId,
                 content: message.content,
+                requestId: message.requestId,
                 timestamp: message.timestamp,
                 isRead: message.isRead,
-                status: online ? 'delivered' : 'saved',
+                status: receiverSocketIds?.size ? 'delivered' : 'saved',
             });
         } catch (error) {
             socket.emit('error', { message: 'Failed to send message: ' + error.message });
@@ -202,77 +199,12 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     @SubscribeMessage('typing')
     handleTyping(@ConnectedSocket() socket: AuthSocket, @MessageBody() data: { receiverId: string; isTyping: boolean }) {
         const receiverSocketIds = this.connectedUsers.get(data.receiverId);
-        if (receiverSocketIds && receiverSocketIds.size > 0) {
-            for (const socketId of receiverSocketIds) {
-                socket.to(socketId).emit('user_typing', {
-                    senderId: socket.userId,
-                    isTyping: data.isTyping,
-                });
-            }
+        if (receiverSocketIds?.size) {
+            for (const socketId of receiverSocketIds) socket.to(socketId).emit('user_typing', {
+                senderId: socket.userId,
+                isTyping: data.isTyping,
+            });
         }
-    }
-
-    @SubscribeMessage('update_location')
-    async handleUpdateLocation(
-        @ConnectedSocket() socket: AuthSocket,
-        @MessageBody() data: { latitude: number; longitude: number; requestId: string },
-    ) {
-        const volunteerId = socket.userId;
-        if (!volunteerId || typeof data.latitude !== 'number' || typeof data.longitude !== 'number' || !data.requestId) return;
-
-        try {
-            const request = await this.helpRequestModel.findById(data.requestId).exec();
-            if (!request || !request.userId) return;
-
-            const seekerId = request.userId.toString();
-            this.emitToUserSockets(seekerId, 'volunteer_location', {
-                volunteerId,
-                latitude: data.latitude,
-                longitude: data.longitude,
-                requestId: data.requestId,
-                timestamp: new Date().toISOString(),
-            });
-        } catch { }
-    }
-
-    @SubscribeMessage('start_tracking')
-    async handleStartTracking(
-        @ConnectedSocket() socket: AuthSocket,
-        @MessageBody() data: { requestId: string },
-    ) {
-        const volunteerId = socket.userId;
-        if (!volunteerId || !data.requestId) return;
-        try {
-            const request = await this.helpRequestModel.findById(data.requestId).exec();
-            if (!request || !request.userId) return;
-            const seekerId = request.userId.toString();
-            this.emitToUserSockets(seekerId, 'tracking_status', {
-                volunteerId,
-                requestId: data.requestId,
-                status: 'en_route',
-                timestamp: new Date().toISOString(),
-            });
-        } catch { }
-    }
-
-    @SubscribeMessage('stop_tracking')
-    async handleStopTracking(
-        @ConnectedSocket() socket: AuthSocket,
-        @MessageBody() data: { requestId: string },
-    ) {
-        const volunteerId = socket.userId;
-        if (!volunteerId || !data.requestId) return;
-        try {
-            const request = await this.helpRequestModel.findById(data.requestId).exec();
-            if (!request || !request.userId) return;
-            const seekerId = request.userId.toString();
-            this.emitToUserSockets(seekerId, 'tracking_status', {
-                volunteerId,
-                requestId: data.requestId,
-                status: 'arrived',
-                timestamp: new Date().toISOString(),
-            });
-        } catch { }
     }
 
     // ──────────────────────────────────────────────
@@ -289,11 +221,9 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     notifyUsers(userIds: string[], event: string, data: any) {
         let notified = 0;
         for (const userId of userIds) {
-            const sockets = this.connectedUsers.get(userId);
-            if (sockets && sockets.size > 0) {
-                for (const socketId of sockets) {
-                    this.server.to(socketId).emit(event, data);
-                }
+            const socketIds = this.connectedUsers.get(userId);
+            if (socketIds?.size) {
+                for (const socketId of socketIds) this.server.to(socketId).emit(event, data);
                 notified++;
                 console.log(`📢 [${event}] → user ${userId} socket(s) ${[...sockets].join(',')} EMITTED`);
             } else {
@@ -334,5 +264,15 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     /** Get the list of all currently connected user IDs. */
     getConnectedUserIds(): string[] {
         return Array.from(this.connectedUsers.keys());
+    }
+
+    disconnectUser(userId: string) {
+        const socketIds = this.connectedUsers.get(userId);
+        if (!socketIds) return 0;
+        for (const socketId of socketIds) {
+            this.server.sockets.sockets.get(socketId)?.disconnect(true);
+        }
+        this.connectedUsers.delete(userId);
+        return socketIds.size;
     }
 }

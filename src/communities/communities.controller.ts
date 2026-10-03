@@ -73,6 +73,12 @@ export class CommunitiesController {
         };
     }
 
+    @Get('joined/history')
+    async joinedHistory(@Req() req: any) {
+        const communities = await this.communitiesService.findJoinedHistory(req.user.sub);
+        return { success: true, data: communities };
+    }
+
     @Post(':id/join')
     async join(@Req() req: any, @Param('id') id: string) {
         this.ensureVolunteerOrAdmin(req.user.role);
@@ -105,6 +111,12 @@ export class CommunitiesController {
             message: 'Community deleted',
             data: result,
         };
+    }
+
+    @Delete(':id/history')
+    async hideHistory(@Req() req: any, @Param('id') id: string) {
+        const community = await this.communitiesService.hideForMember(id, req.user.sub);
+        return { success: true, message: 'Community removed from your history', data: community };
     }
 
     @Get(':id/messages')

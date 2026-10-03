@@ -17,10 +17,18 @@ export class Signup {
     username: string;
     @Prop({ required: true })
     email: string;
-    @Prop({ required: true })
+    @Prop({ required: true, select: false })
     password: string;
     @Prop({ required: false, default: 'user' })
     role: string;
+    @Prop({ default: false })
+    blocked: boolean;
+    @Prop()
+    moderationReason?: string;
+    @Prop()
+    moderatedAt?: Date;
+    @Prop()
+    moderatedBy?: string;
     @Prop({ required: false })
     profileImage?: string;
     /**
@@ -33,5 +41,13 @@ export class Signup {
     googleId?: string; // Google OAuth ID for Google Sign-In users
 }
 export const SignupSchema = SchemaFactory.createForClass(Signup);
+
+// Explicit password selection for authentication must never expose it in JSON.
+SignupSchema.set('toJSON', {
+    transform: (_document, result) => {
+        Reflect.deleteProperty(result, 'password');
+        return result;
+    },
+});
 
 SignupSchema.index({ location: '2dsphere' }, { partialFilterExpression: { 'location.type': 'Point' } });

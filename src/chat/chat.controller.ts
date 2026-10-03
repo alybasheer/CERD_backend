@@ -1,11 +1,13 @@
-import { BadRequestException, Body, Controller, Delete, Get, Headers, Param, Post, Query, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Headers, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { SignupDocument } from '../authentication/signup.schema';
 import { ChatService } from './chat.service';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 
 @Controller('chat')
+@UseGuards(JwtAuthGuard)
 export class ChatController {
     constructor(
         private chatService: ChatService,
@@ -16,7 +18,7 @@ export class ChatController {
     private verifyTokenAndGetPayload(authHeader: string) {
         if (!authHeader) throw new UnauthorizedException('Authorization header required');
         const token = authHeader.replace(/^Bearer\s+/i, '');
-        const payload: any = this.jwtService.verify(token, { secret: process.env.JWT_SECRET ?? 'dev_secret_key' });
+        const payload: any = this.jwtService.verify(token);
         return payload;
     }
 
@@ -25,6 +27,7 @@ export class ChatController {
         @Headers('authorization') auth: string,
         @Param('otherUserId') otherUserId: string,
         @Query('limit') limit: string = '50',
+        @Query('requestId') requestId?: string,
     ) {
         const payload = this.verifyTokenAndGetPayload(auth);
         const userId = payload.sub;
@@ -34,7 +37,7 @@ export class ChatController {
             throw new BadRequestException('Cannot chat with yourself');
         }
 
-        const messages = await this.chatService.getConversation(userId, otherUserId, parseInt(limit));
+        const messages = await this.chatService.getConversation(userId, otherUserId, parseInt(limit), requestId);
 
         return {
             success: true,
@@ -179,7 +182,7 @@ export class ChatController {
     @Post('send-message')
     async sendMessage(
         @Headers('authorization') auth: string,
-        @Body() body: { receiverId: string; content: string },
+        @Body() body: { receiverId: string; content: string; requestId?: string },
     ) {
         const payload = this.verifyTokenAndGetPayload(auth);
         const senderId = payload.sub;
@@ -193,7 +196,9 @@ export class ChatController {
         }
 
         try {
-            const message = await this.chatService.saveMessage(senderId, body.receiverId, body.content);
+            const message = await this.chatService.saveMessage(senderId, body.receiverId, body.content, body.requestId);
+
+            console.log(`✅ Message saved: ${message._id}`);
 
             return {
                 success: true,
@@ -270,11 +275,11 @@ export class ChatController {
 
             return {
                 success: true,
-                message: `Conversation deleted successfully (${result.deletedCount} messages)`,
+                message: 'Conversation removed from this account',
                 data: {
                     userId,
                     otherUserId,
-                    messagesDeleted: result.deletedCount,
+                    messagesHidden: result.modifiedCount,
                 },
             };
         } catch (error) {

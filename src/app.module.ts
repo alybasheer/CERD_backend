@@ -15,6 +15,7 @@ import { CommunitiesModule } from './communities/communities.module';
 import { HelpRequestsModule } from './help-requests/help-requests.module';
 import { MapModule } from './map/map.module';
 import { VolunteerModule } from './volunteer/volunteer.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
@@ -64,6 +65,7 @@ import { VolunteerModule } from './volunteer/volunteer.module';
     AppVersionModule,
     CommunitiesModule,
     MapModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

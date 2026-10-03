@@ -49,7 +49,7 @@ export class HelpRequest {
     })
     location: { type: string; coordinates: number[] };
 
-    @Prop({ required: true, default: 'open', enum: ['open', 'accepted', 'resolved', 'cancelled'] })
+    @Prop({ required: true, default: 'open', enum: ['open', 'accepted', 'resolved', 'cancelled', 'expired'] })
     status: string;
 
     @Prop({ type: Types.ObjectId, ref: 'Signup', required: false })
@@ -76,14 +76,21 @@ export class HelpRequest {
      * when the current time exceeds this value.
      * Not set for SOS requests (they never expire).
      */
-    @Prop({ required: false })
-    expiresAt?: Date;
+    @Prop({ required: true })
+    acceptanceExpiresAt: Date;
+
+    @Prop({ type: [Types.ObjectId], ref: 'Signup', default: [] })
+    hiddenFor: Types.ObjectId[];
+
+    @Prop()
+    completedAt?: Date;
 }
 
 export const HelpRequestSchema = SchemaFactory.createForClass(HelpRequest);
 
 // TTL index — MongoDB auto-deletes documents after expiresAt
-HelpRequestSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+HelpRequestSchema.index({ acceptanceExpiresAt: 1, status: 1 });
+HelpRequestSchema.index({ userId: 1, createdAt: -1 });
 
 // Compound 2dsphere index for filtered geospatial queries (find open requests near a location).
 // NOTE: keep exactly ONE 2dsphere index per collection here — multiple 2dsphere indexes make

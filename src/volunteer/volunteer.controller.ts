@@ -10,6 +10,7 @@ import {
   Res,
   UnauthorizedException,
   UploadedFiles,
+  UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -18,8 +19,10 @@ import type { Response } from 'express';
 import { ApplyVolunteerDto } from './dto/apply-volunteer.dto';
 import { VolunteerMediaService } from './volunteer-media.service';
 import { VolunteerService } from './volunteer.service';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 
 @Controller('volunteer')
+@UseGuards(JwtAuthGuard)
 export class VolunteerController {
   constructor(
     private readonly volunteerService: VolunteerService,
@@ -31,9 +34,7 @@ export class VolunteerController {
     if (!authHeader)
       throw new UnauthorizedException('Authorization header required');
     const token = authHeader.replace(/^Bearer\s+/i, '');
-    const payload: any = this.jwtService.verify(token, {
-      secret: process.env.JWT_SECRET ?? 'dev_secret_key',
-    });
+    const payload: any = this.jwtService.verify(token);
     return payload;
   }
 

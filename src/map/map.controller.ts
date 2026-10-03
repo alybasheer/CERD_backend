@@ -17,4 +17,4 @@ export class MapController {
             data: users,
         };
     }
-}
+}//

@@ -14,6 +14,12 @@ export class Message {
     @Prop({ required: true })
     content: string;
 
+    @Prop({ type: Types.ObjectId, ref: 'HelpRequest' })
+    requestId?: Types.ObjectId;
+
+    @Prop({ type: [Types.ObjectId], ref: 'Signup', default: [] })
+    hiddenFor: Types.ObjectId[];
+
     @Prop({ default: false })
     isRead: boolean;
 
@@ -26,3 +32,4 @@ export const MessageSchema = SchemaFactory.createForClass(Message);
 // Index for efficient queries
 MessageSchema.index({ senderId: 1, receiverId: 1, createdAt: -1 });
 MessageSchema.index({ receiverId: 1, isRead: 1 });
+MessageSchema.index({ requestId: 1, createdAt: 1 });
