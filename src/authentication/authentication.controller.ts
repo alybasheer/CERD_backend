@@ -3,6 +3,8 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { AuthenticationService } from './authentication.service';
 import { GoogleLoginDto } from './dto/google-login.dto';
 import { LocationDto } from './dto/location.dto';
+import { LoginDto } from './dto/login.dto';
+import { SignupDto } from './dto/signup.dto';
 import { SessionService } from './session.service';
 
 @Controller('authentication')

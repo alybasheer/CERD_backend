@@ -5,7 +5,7 @@ import { HydratedDocument } from 'mongoose';
 export class Session {
   @Prop({ required: true, index: true }) userId: string;
   @Prop({ required: true, unique: true, select: false }) tokenHash: string;
-  @Prop({ default: null }) revokedAt: Date | null;
+  @Prop({ type: Date, default: null }) revokedAt: Date | null;
 }
 
 export type SessionDocument = HydratedDocument<Session>;

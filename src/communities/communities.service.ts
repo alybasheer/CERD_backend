@@ -110,10 +110,6 @@ export class CommunitiesService {
             return this.communityModel.aggregate(pipeline as any).exec();
         }
 
-        const query: any = {};
-        if (filters.category) query.category = filters.category;
-        query.status = filters.status ?? { $ne: 'cancelled' };
-
         return this.communityModel
             .find(query)
             .sort({ createdAt: -1 })

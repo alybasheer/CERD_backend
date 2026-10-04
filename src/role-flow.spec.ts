@@ -584,6 +584,7 @@ describe('volunteer/requester role flow', () => {
             ratingsService,
             { deleteRequestConversation: jest.fn() } as any,
             { notifyUsers: jest.fn().mockResolvedValue(0) } as any,
+            { getRoute: jest.fn(), getDistanceMatrix: jest.fn().mockResolvedValue([]) } as any,
         );
         helpController = new HelpRequestsController(helpService, {
             upload: jest.fn(),
@@ -597,7 +598,11 @@ describe('volunteer/requester role flow', () => {
         );
         communitiesController = new CommunitiesController(communitiesService);
         chatService = new ChatService({} as any, SignupModel as any, HelpRequestModel as any);
-        mapService = new MapService(SignupModel as any, chatGateway as ChatGateway);
+        mapService = new MapService(
+            SignupModel as any,
+            chatGateway as ChatGateway,
+            { getDistanceMatrix: jest.fn().mockResolvedValue([]) } as any,
+        );
     });
 
     it('keeps account roles stable through signup, admin approval, re-login, and volunteer-created requests', async () => {

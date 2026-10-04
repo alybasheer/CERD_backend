@@ -4,6 +4,7 @@ import { Model, Types } from 'mongoose';
 import { SignupDocument } from '../authentication/signup.schema';
 import { ChatGateway } from '../chat/chat.gateway';
 import { ChatService } from '../chat/chat.service';
+import { RoutingService } from '../common/services/routing.service';
 import { RateHelpRequestDto } from '../ratings/dto/rate-help-request.dto';
 import { RatingsService } from '../ratings/ratings.service';
 import { VolunteerDocument } from '../volunteer/volunteer.schema';
@@ -46,7 +47,23 @@ export class HelpRequestsService implements OnModuleInit {
         private readonly ratingsService: RatingsService,
         private readonly chatService: ChatService,
         private readonly notifications: NotificationsService,
+        private readonly routingService: RoutingService,
     ) {}
+
+    async onModuleInit() {
+        try {
+            const indexes = await this.helpRequestModel.collection.indexes();
+            const redundant = indexes.find(
+                (index: any) => index.key && Object.keys(index.key).length === 1 && index.key.location === '2dsphere',
+            );
+            if (redundant?.name) {
+                await this.helpRequestModel.collection.dropIndex(redundant.name);
+                this.logger.log(`Dropped redundant help-request geo index: ${redundant.name}`);
+            }
+        } catch (error) {
+            this.logger.error(`Failed to inspect help-request indexes: ${(error as Error).message}`);
+        }
+    }
 
     // ──────────────────────────────────────────────
     // CREATE
@@ -67,6 +84,7 @@ export class HelpRequestsService implements OnModuleInit {
         };
 
         const acceptanceExpiresAt = new Date(Date.now() + TTL_HOURS * 60 * 60 * 1000);
+        const isSos = (dto as CreateHelpRequestDto & { isSos?: boolean }).isSos === true;
 
         const created = new this.helpRequestModel({
             userId: new Types.ObjectId(userId),

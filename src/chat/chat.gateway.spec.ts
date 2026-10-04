@@ -5,6 +5,8 @@ import { INestApplication } from '@nestjs/common';
 import { io, Socket } from 'socket.io-client';
 import { ChatGateway } from './chat.gateway';
 import { ChatService } from './chat.service';
+import { SessionService } from '../authentication/session.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 // Token -> identity map (two distinct tokens map to the SAME seeker account)
 const TOKEN_IDENTITY: Record<string, { sub: string; role: string }> = {
@@ -39,6 +41,20 @@ describe('ChatGateway (multi-socket registry)', () => {
               isRead: false,
             })),
           },
+        },
+        {
+          provide: SessionService,
+          useValue: {
+            authenticate: jest.fn(async (token: string) => {
+              const identity = TOKEN_IDENTITY[token];
+              if (!identity) throw new Error('invalid token');
+              return { ...identity, sid: `session-${token}` };
+            }),
+          },
+        },
+        {
+          provide: NotificationsService,
+          useValue: { notifyUsers: jest.fn().mockResolvedValue(0) },
         },
         {
           provide: JwtService,
@@ -82,6 +98,14 @@ describe('ChatGateway (multi-socket registry)', () => {
     allSockets.length = 0;
     await new Promise((r) => setTimeout(r, 300));
     await app.close();
+  });
+
+  afterEach(async () => {
+    for (const socket of allSockets.splice(0)) {
+      socket.removeAllListeners();
+      socket.disconnect();
+    }
+    await settle();
   });
 
   const allSockets: Socket[] = [];

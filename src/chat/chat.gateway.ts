@@ -1,4 +1,5 @@
 import { SessionService } from '../authentication/session.service';
+import { InjectModel } from '@nestjs/mongoose';
 import {
     ConnectedSocket,
     MessageBody,
@@ -37,6 +38,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         private chatService: ChatService,
         private sessions: SessionService,
         private notifications: NotificationsService,
+        @InjectModel('HelpRequest') private helpRequestModel: Model<HelpRequestDocument>,
     ) { }
 
     afterInit(server: any) {
@@ -207,6 +209,51 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         }
     }
 
+    @SubscribeMessage('start_tracking')
+    async handleStartTracking(
+        @ConnectedSocket() socket: AuthSocket,
+        @MessageBody() data: { requestId: string },
+    ) {
+        await this.emitTrackingStatus(socket, data.requestId, 'en_route');
+    }
+
+    @SubscribeMessage('stop_tracking')
+    async handleStopTracking(
+        @ConnectedSocket() socket: AuthSocket,
+        @MessageBody() data: { requestId: string },
+    ) {
+        await this.emitTrackingStatus(socket, data.requestId, 'arrived');
+    }
+
+    private async emitTrackingStatus(socket: AuthSocket, requestId: string, status: string) {
+        if (!socket.userId || !requestId) return;
+        const request = await this.helpRequestModel.findById(requestId).exec();
+        if (!request?.userId) return;
+        this.emitToUserSockets(request.userId.toString(), 'tracking_status', {
+            requestId,
+            volunteerId: socket.userId,
+            status,
+        });
+    }
+
+    @SubscribeMessage('update_location')
+    async handleUpdateLocation(
+        @ConnectedSocket() socket: AuthSocket,
+        @MessageBody() data: { latitude: number; longitude: number; requestId: string },
+    ) {
+        if (!socket.userId || !data.requestId ||
+            typeof data.latitude !== 'number' || typeof data.longitude !== 'number') return;
+        const request = await this.helpRequestModel.findById(data.requestId).exec();
+        if (!request?.userId) return;
+        this.emitToUserSockets(request.userId.toString(), 'volunteer_location', {
+            requestId: data.requestId,
+            volunteerId: socket.userId,
+            latitude: data.latitude,
+            longitude: data.longitude,
+            timestamp: new Date().toISOString(),
+        });
+    }
+
     // ──────────────────────────────────────────────
     // PUBLIC API — called by other modules
     // ──────────────────────────────────────────────
@@ -225,7 +272,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
             if (socketIds?.size) {
                 for (const socketId of socketIds) this.server.to(socketId).emit(event, data);
                 notified++;
-                console.log(`📢 [${event}] → user ${userId} socket(s) ${[...sockets].join(',')} EMITTED`);
+                console.log(`📢 [${event}] → user ${userId} socket(s) ${[...socketIds].join(',')} EMITTED`);
             } else {
                 console.log(`📢 [${event}] ✗ user ${userId} NOT CONNECTED (connectedUsers map miss)`);
             }
