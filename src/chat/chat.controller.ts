@@ -4,6 +4,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { SignupDocument } from '../authentication/signup.schema';
 import { ChatService } from './chat.service';
+import { ChatGateway } from './chat.gateway';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 
 @Controller('chat')
@@ -11,6 +12,7 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 export class ChatController {
     constructor(
         private chatService: ChatService,
+        private chatGateway: ChatGateway,
         private jwtService: JwtService,
         @InjectModel('Signup') private signupModel: Model<SignupDocument>,
     ) { }
@@ -182,7 +184,7 @@ export class ChatController {
     @Post('send-message')
     async sendMessage(
         @Headers('authorization') auth: string,
-        @Body() body: { receiverId: string; content: string; requestId?: string },
+        @Body() body: { receiverId: string; content: string },
     ) {
         const payload = this.verifyTokenAndGetPayload(auth);
         const senderId = payload.sub;
@@ -196,7 +198,8 @@ export class ChatController {
         }
 
         try {
-            const message = await this.chatService.saveMessage(senderId, body.receiverId, body.content, body.requestId);
+            const message = await this.chatService.saveMessage(senderId, body.receiverId, body.content);
+            this.chatGateway.deliverDirectMessage(message, senderId, body.receiverId);
 
             console.log(`✅ Message saved: ${message._id}`);
 

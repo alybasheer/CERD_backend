@@ -285,6 +285,30 @@ describe('ChatGateway (multi-socket registry)', () => {
       await disconnectSocket(rx2.socket);
       await disconnectSocket(tx.socket);
     });
+
+    it('delivers a REST-persisted direct message to every receiver socket', async () => {
+      const rx1 = await connectSocket('seek');
+      const rx2 = await connectSocket('seek2');
+
+      const delivered = gateway.deliverDirectMessage(
+        {
+          _id: 'rest-message-1',
+          content: 'persisted first',
+          timestamp: new Date(),
+          isRead: false,
+        },
+        'user-volunteer',
+        'user-seeker',
+      );
+      await new Promise((r) => setTimeout(r, 300));
+
+      expect(delivered).toBe(2);
+      expect(rx1.got.filter((e) => e === 'receive_message')).toHaveLength(1);
+      expect(rx2.got.filter((e) => e === 'receive_message')).toHaveLength(1);
+
+      await disconnectSocket(rx1.socket);
+      await disconnectSocket(rx2.socket);
+    });
   });
 
   describe('notifyUsers / help flows', () => {

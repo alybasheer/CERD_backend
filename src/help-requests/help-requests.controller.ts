@@ -205,6 +205,12 @@ export class HelpRequestsController {
         };
     }
 
+    @Get('my/accepted-history')
+    async myAcceptedHistory(@Req() req: any) {
+        const requests = await this.helpRequestsService.getVolunteerAcceptedHistory(req.user.sub);
+        return { success: true, data: requests };
+    }
+
     @Get('my/stats')
     async myStats(@Req() req: any) {
         const userId = req.user.sub;
@@ -317,7 +323,7 @@ export class HelpRequestsController {
 
     @Delete(':id/history')
     async hideFromHistory(@Req() req: any, @Param('id') id: string) {
-        await this.helpRequestsService.hideFromOwnerHistory(id, req.user.sub);
+        await this.helpRequestsService.hideFromParticipantHistory(id, req.user.sub);
         return { success: true, message: 'Request removed from your history' };
     }
 

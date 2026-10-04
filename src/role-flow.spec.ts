@@ -679,6 +679,17 @@ describe('volunteer/requester role flow', () => {
         );
         expect(resolved.data.status).toBe('resolved');
 
+        const volunteerHistory = await helpController.myAcceptedHistory(reqFor(volunteer));
+        expect(volunteerHistory.data).toHaveLength(1);
+        expect(idString(volunteerHistory.data[0])).toBe(idString(requesterRequest.data.request));
+
+        await helpController.hideFromHistory(
+            reqFor(volunteer),
+            idString(requesterRequest.data.request),
+        );
+        expect((await helpController.myAcceptedHistory(reqFor(volunteer))).data).toEqual([]);
+        expect((await helpController.myRequests(reqFor(requester))).data).toHaveLength(1);
+
         await expect(
             helpController.rate(reqFor(volunteer), idString(requesterRequest.data.request), {
                 score: 4,
@@ -792,7 +803,7 @@ describe('volunteer/requester role flow', () => {
         expect(cancelled.data.status).toBe('cancelled');
     });
 
-    it('builds chat coordination contacts for the requester side and volunteer side', async () => {
+    it('keeps coordination contacts limited to volunteer-to-volunteer discovery', async () => {
         await bootstrapTwoUsers();
 
         const requesterRequest = await helpController.create(
@@ -807,11 +818,10 @@ describe('volunteer/requester role flow', () => {
         );
         const requesterContacts = await chatService.getCoordinationContacts(idString(requester), 'user');
 
-        expect(volunteerContacts.requestees.map(idString)).toEqual([idString(requester)]);
+        expect(volunteerContacts.requestees).toEqual([]);
         expect(volunteerContacts.volunteers).toEqual([]);
         expect(requesterContacts.requestees).toEqual([]);
-        expect(requesterContacts.volunteers.map(idString)).toEqual([idString(volunteer)]);
-        expect(requesterContacts.volunteers[0].contactType).toBe('acceptedVolunteer');
+        expect(requesterContacts.volunteers).toEqual([]);
     });
 
     it('keeps map markers tied to account role rather than active help-request ownership', async () => {

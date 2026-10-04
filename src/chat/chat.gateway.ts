@@ -209,6 +209,27 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         }
     }
 
+    deliverDirectMessage(message: any, senderId: string, receiverId: string): number {
+        const payload = {
+            _id: message._id,
+            senderId,
+            receiverId,
+            content: message.content,
+            timestamp: message.timestamp,
+            isRead: message.isRead,
+        };
+        const delivered = this.emitToUserSockets(receiverId, 'receive_message', payload);
+        if (delivered === 0) {
+            void this.notifications.notifyUsers(
+                [receiverId],
+                'New message',
+                'You have a new message in WeHelp.',
+                { type: 'direct_message', senderId },
+            ).catch(() => undefined);
+        }
+        return delivered;
+    }
+
     @SubscribeMessage('start_tracking')
     async handleStartTracking(
         @ConnectedSocket() socket: AuthSocket,

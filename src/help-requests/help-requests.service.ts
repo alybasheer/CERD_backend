@@ -420,6 +420,20 @@ export class HelpRequestsService implements OnModuleInit {
             .exec();
     }
 
+    async getVolunteerAcceptedHistory(volunteerId: string) {
+        await this.expireOpenRequests();
+        const id = new Types.ObjectId(volunteerId);
+        return this.helpRequestModel
+            .find({
+                acceptedBy: id,
+                status: { $in: ['resolved', 'cancelled'] },
+                hiddenFor: { $ne: id },
+            })
+            .sort({ completedAt: -1, createdAt: -1 })
+            .populate('userId', 'username email')
+            .exec();
+    }
+
     // ──────────────────────────────────────────────
     async getMyActiveRequests(userId: string) {
         await this.expireOpenRequests();
@@ -673,18 +687,19 @@ export class HelpRequestsService implements OnModuleInit {
         return request;
     }
 
-    async hideFromOwnerHistory(requestId: string, ownerId: string) {
+    async hideFromParticipantHistory(requestId: string, participantId: string) {
         if (!Types.ObjectId.isValid(requestId)) throw new NotFoundException('Help request not found');
+        const id = new Types.ObjectId(participantId);
         const result = await this.helpRequestModel.updateOne(
             {
                 _id: new Types.ObjectId(requestId),
-                userId: new Types.ObjectId(ownerId),
+                $or: [{ userId: id }, { acceptedBy: id }],
                 status: { $in: ['resolved', 'cancelled', 'expired'] },
             },
-            { $addToSet: { hiddenFor: new Types.ObjectId(ownerId) } },
+            { $addToSet: { hiddenFor: id } },
         ).exec();
         if (!result.matchedCount) {
-            throw new BadRequestException('Only completed, cancelled, or expired requests can be removed from history');
+            throw new BadRequestException('Only a request participant can remove terminal history');
         }
     }
 
